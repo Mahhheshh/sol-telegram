@@ -1,15 +1,18 @@
 import TelegramBot, { Message, CallbackQuery } from "node-telegram-bot-api";
 import bs58 from "bs58";
-import { Keypair } from "@solana/web3.js";
+import { Keypair, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import RpcConnection from "./web3/connection";
 import db from "./lib/db";
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const bot = new TelegramBot(TOKEN, { polling: true });
 
 const HOME_BUTTONS = [
-  { text: "create a new wallet", callback_data: "create_wallet" },
-  { text: "Wallets", callback_data: "list_wallets" },
-  { text: "close", callback_data: "close" },
+  [
+    { text: "create a new wallet", callback_data: "create_wallet" },
+    { text: "Wallets", callback_data: "list_wallets" },
+  ],
+  [{ text: "close", callback_data: "close" }],
 ];
 
 const handleGmMessage = (msg: Message) => {
@@ -22,95 +25,17 @@ const handleHomeCommand = async (msg: Message) => {
   const chatId = msg.chat.id;
   bot.sendMessage(
     chatId,
-    `Gm, ${msg.chat.username || msg.chat.first_name}\nManage your solona wallets below.`,
-    { reply_markup: { inline_keyboard: [HOME_BUTTONS] } }
+    `Gm, ${
+      msg.chat.username || msg.chat.first_name
+    }\nManage your solona wallets below.`,
+    { reply_markup: { inline_keyboard: HOME_BUTTONS } }
   );
 };
 
 const handleListWalletCommand = async (msg: Message) => {
   const chatId = msg.chat.id;
-
   await listWallets(chatId);
-}
-
-const createWallet = async (chatId: number) => {
-  const keypair = new Keypair();
-  await db.wallet.create({
-    data: {
-      chatId: chatId,
-      public: keypair.publicKey.toString(),
-      private: bs58.encode(keypair.secretKey),
-    },
-  });
-  bot.sendMessage(
-    chatId,
-    `Success: Your new wallet is:\n\n${keypair.publicKey.toString()}\n\nYou can receive payments at this address`
-  );
 };
-
-const listWallets = async (chatId: number) => {
-  const wallets = await db.wallet.findMany({
-    where: { chatId: chatId },
-    select: { public: true },
-  });
-
-  const buttons = wallets.map((wallet) => ({
-    text: wallet.public,
-    callback_data: `wallet_${wallet.public}`,
-  }));
-
-  bot.sendMessage(chatId, "Here is the list of wallets you own.", {
-    reply_markup: { 
-      inline_keyboard: buttons.map((button) => {
-        return [button];
-      })
-    }
-  });
-};
-
-const showWalletDetails = async (chatId: number, pubKey: string) => {
-  const keys = await db.wallet.findFirst({
-    where: { public: pubKey },
-    select: { public: true, private: true },
-  });
-
-  bot.sendMessage(
-    chatId,
-    `Showing wallet details for:\nPublic Key: ${pubKey}\nPrivate Key: ${keys?.private}`,
-    {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "View on SolScan", url: `https://solscan.io/account/${pubKey}` },
-            { text: "close", callback_data: "close" },
-          ],
-          [
-            {
-              text: "Delete Wallet", callback_data: `delete_${pubKey}`
-            }
-          ]
-        ],
-      },
-    }
-  );
-};
-
-const deleteWallet = async (publicKey: string) => {
-  try {
-    const row = await db.wallet.findFirst({
-      where: { 
-        public: publicKey
-      }
-    })
-    await db.wallet.delete({
-      where: {
-        id: row?.id,
-      }
-    })
-  } catch (error) {
-    console.error(error);
-  }
-}
 
 const handleCallbackQuery = async (query: CallbackQuery) => {
   const chatId = query.message?.chat.id;
@@ -135,11 +60,120 @@ const handleCallbackQuery = async (query: CallbackQuery) => {
       if (data?.startsWith("wallet_")) {
         await showWalletDetails(chatId, data.split("wallet_")[1]);
       } else if (data?.startsWith("delete_")) {
-        await deleteWallet(data.split("delete_")[1]);
-        bot.sendMessage(chatId, "Wallet deleted..");
+        await handleDelete(chatId, data.split("delete_")[1]);
+      } else if (data?.startsWith("confirm_delete_")) {
+        const deleted = await deleteWallet(data.split("confirm_delete_")[1])
+        if (deleted) {
+          bot.sendMessage(chatId, "Wallet deleted successfully.");
+        }
       }
       break;
   }
+};
+
+const createWallet = async (chatId: number) => {
+  try {
+    const keypair = new Keypair();
+    await db.wallet.create({
+      data: {
+        chatId: chatId,
+        public: keypair.publicKey.toString(),
+        private: bs58.encode(keypair.secretKey),
+      },
+    });
+    bot.sendMessage(
+      chatId,
+      `Success: Your new wallet is:\n\n${keypair.publicKey.toString()}\n\nYou can receive payments at this address`
+    );
+  } catch (error) {
+    console.error("Error creating wallet:", error);
+    bot.sendMessage(chatId, "Failed to create wallet. Please try again.");
+  }
+};
+
+const listWallets = async (chatId: number) => {
+  try {
+    const wallets = await db.wallet.findMany({
+      where: { chatId: chatId },
+      select: { public: true },
+    });
+
+    if (wallets.length === 0) {
+      bot.sendMessage(chatId, "You don't have any wallet.\nCreate a New wallet: ", {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "create a new wallet", callback_data: "create_wallet" }],
+            [{ text: "close", callback_data: "close" }],
+          ],
+        },
+      });
+      return;
+    }
+
+    const buttons = wallets.map((wallet) => ({
+      text: wallet.public,
+      callback_data: `wallet_${wallet.public}`,
+    }));
+
+    bot.sendMessage(chatId, "Here is the list of wallets you own.", {
+      reply_markup: {
+        inline_keyboard: buttons.map((button) => [button]),
+      },
+    });
+  } catch (error) {
+    console.error("Error listing wallets:", error);
+    bot.sendMessage(chatId, "Failed to list wallets. Please try again.");
+  }
+};
+
+const showWalletDetails = async (chatId: number, pubKey: string) => {
+  try {
+    const keys = await db.wallet.findFirst({
+      where: { public: pubKey },
+      select: { public: true, private: true },
+    });
+    const accountBalance = await RpcConnection.getRpcConnection().getBalance(new PublicKey(pubKey));
+    bot.sendMessage(
+      chatId,
+      `\`\`\`===============================\n|      Wallet Details          |\n===============================\nPublic Key: ${pubKey}\nBalance: ${(accountBalance / LAMPORTS_PER_SOL).toFixed(2)} SOL\nPrivate Key: ${keys?.private} \`\`\``,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "View on SolScan", url: `https://solscan.io/account/${pubKey}` }, { text: "close", callback_data: "close" }],
+            [{ text: "Delete Wallet", callback_data: `delete_${pubKey}` }],
+          ],
+        },
+        parse_mode: "Markdown",
+      }
+    );
+  } catch (error) {
+    console.error("Error showing wallet details:", error);
+    bot.sendMessage(chatId, "Failed to show wallet details. Please try again.");
+  }
+};
+
+const deleteWallet = async (publicKey: string): Promise<boolean> => {
+  try {
+    const row = await db.wallet.findFirst({ where: { public: publicKey } });
+    if (row) {
+      await db.wallet.delete({ where: { id: row.id } });
+    }
+    return true;
+  } catch (error) {
+    console.error("Error deleting wallet:", error);
+    return false;
+  }
+};
+
+const handleDelete = async (chatId: number, pubKey: string) => {
+  bot.sendMessage(chatId, `Are you sure?\nThis action cannot be undone and will delete wallet ${pubKey}`, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "Confirm", callback_data: `confirm_delete_${pubKey}` }],
+        [{ text: "cancel", callback_data: "close" }],
+      ],
+    },
+  });
 };
 
 bot.on("message", handleGmMessage);
