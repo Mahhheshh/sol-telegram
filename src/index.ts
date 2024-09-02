@@ -1,6 +1,6 @@
 import TelegramBot, { Message, CallbackQuery } from "node-telegram-bot-api";
 import bs58 from "bs58";
-import { Keypair, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { Keypair, PublicKey, LAMPORTS_PER_SOL, Transaction, SystemProgram, sendAndConfirmTransaction, SendTransactionError, ComputeBudgetProgram } from "@solana/web3.js";
 import RpcConnection from "./web3/connection";
 import db from "./lib/db";
 
@@ -66,6 +66,8 @@ const handleCallbackQuery = async (query: CallbackQuery) => {
         if (deleted) {
           bot.sendMessage(chatId, "Wallet deleted successfully.");
         }
+      } else if (data?.startsWith("withdraw_")) {
+        await handleWithdraw(chatId, data.split("withdraw_")[1]);
       }
       break;
   }
@@ -140,6 +142,7 @@ const showWalletDetails = async (chatId: number, pubKey: string) => {
         reply_markup: {
           inline_keyboard: [
             [{ text: "View on SolScan", url: `https://solscan.io/account/${pubKey}` }, { text: "close", callback_data: "close" }],
+            [{text: "withdraw", callback_data: `withdraw_${pubKey}`}],
             [{ text: "Delete Wallet", callback_data: `delete_${pubKey}` }],
           ],
         },
@@ -175,6 +178,72 @@ const handleDelete = async (chatId: number, pubKey: string) => {
     },
   });
 };
+
+async function handleWithdraw(chatId: number, publicKey: any) {
+  const connection = RpcConnection.getRpcConnection();
+  const balance = (await connection.getBalance(new PublicKey(publicKey))) / LAMPORTS_PER_SOL;
+
+  if (balance <= 0.0000001) {
+    bot.sendMessage(chatId, "Insufficient Funds!", {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "close", callback_data: "close" }]
+        ]
+      }
+    });
+    return;
+  }
+
+  bot.sendMessage(chatId, "Please provide your wallet address:");
+
+  bot.once('message', async (msg) => {
+    const walletAddress = msg.text;
+
+    if (!walletAddress) {
+      return;
+    }
+
+    const recentBlockHash = await connection.getLatestBlockhash();
+    const row = await db.wallet.findFirst({
+      where: { public: publicKey },
+      select: { private: true }
+    });
+
+    if (!row) {
+      return;
+    }
+
+    const dbKeyPair = Keypair.fromSecretKey(bs58.decode(row.private));
+    const transaction = new Transaction({
+      blockhash: recentBlockHash.blockhash,
+      lastValidBlockHeight: recentBlockHash.lastValidBlockHeight,
+      feePayer: dbKeyPair.publicKey,
+    });
+
+    const fees = await transaction.getEstimatedFee(connection) || 5000;
+    const balanceToTransfer = (balance * LAMPORTS_PER_SOL) - fees;
+
+    transaction.add(
+      SystemProgram.transfer({
+        fromPubkey: dbKeyPair.publicKey,
+        toPubkey: new PublicKey(walletAddress),
+        lamports: balanceToTransfer
+      })
+    );
+
+    try {
+      await sendAndConfirmTransaction(connection, transaction, [dbKeyPair]);
+      bot.sendMessage(chatId, "Sol Transferred..");
+    } catch (error) {
+      if (error instanceof SendTransactionError) {
+        const logs = await error.getLogs(connection);
+        console.error("Transaction failed with logs:", logs);
+      } else {
+        console.error("An unexpected error occurred:", error);
+      }
+    }
+  });
+}
 
 bot.on("message", handleGmMessage);
 bot.onText(/\/home/, handleHomeCommand);
