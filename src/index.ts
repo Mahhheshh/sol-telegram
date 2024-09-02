@@ -1,6 +1,15 @@
 import TelegramBot, { Message, CallbackQuery } from "node-telegram-bot-api";
 import bs58 from "bs58";
-import { Keypair, PublicKey, LAMPORTS_PER_SOL, Transaction, SystemProgram, sendAndConfirmTransaction, SendTransactionError, ComputeBudgetProgram } from "@solana/web3.js";
+import {
+  Keypair,
+  PublicKey,
+  LAMPORTS_PER_SOL,
+  Transaction,
+  SystemProgram,
+  sendAndConfirmTransaction,
+  SendTransactionError,
+  ComputeBudgetProgram,
+} from "@solana/web3.js";
 import RpcConnection from "./web3/connection";
 import db from "./lib/db";
 
@@ -14,6 +23,17 @@ const HOME_BUTTONS = [
   ],
   [{ text: "close", callback_data: "close" }],
 ];
+
+async function handleStartCommand(msg: Message) {
+  const chatId = msg.chat.id;
+  const welcomeMessage = `
+  Welcome to the Bot! \n
+  Here are some commands you can use: \n
+  /home - Go to the home menu \n
+  /wallets - List your wallets \n
+  How can I assist you today?`;
+  bot.sendMessage(chatId, welcomeMessage);
+}
 
 const handleGmMessage = (msg: Message) => {
   if (msg.text?.toLowerCase() !== "gm") return;
@@ -62,7 +82,7 @@ const handleCallbackQuery = async (query: CallbackQuery) => {
       } else if (data?.startsWith("delete_")) {
         await handleDelete(chatId, data.split("delete_")[1]);
       } else if (data?.startsWith("confirm_delete_")) {
-        const deleted = await deleteWallet(data.split("confirm_delete_")[1])
+        const deleted = await deleteWallet(data.split("confirm_delete_")[1]);
         if (deleted) {
           bot.sendMessage(chatId, "Wallet deleted successfully.");
         }
@@ -101,14 +121,18 @@ const listWallets = async (chatId: number) => {
     });
 
     if (wallets.length === 0) {
-      bot.sendMessage(chatId, "You don't have any wallet.\nCreate a New wallet: ", {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "create a new wallet", callback_data: "create_wallet" }],
-            [{ text: "close", callback_data: "close" }],
-          ],
-        },
-      });
+      bot.sendMessage(
+        chatId,
+        "You don't have any wallet.\nCreate a New wallet: ",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "create a new wallet", callback_data: "create_wallet" }],
+              [{ text: "close", callback_data: "close" }],
+            ],
+          },
+        }
+      );
       return;
     }
 
@@ -134,15 +158,25 @@ const showWalletDetails = async (chatId: number, pubKey: string) => {
       where: { public: pubKey },
       select: { public: true, private: true },
     });
-    const accountBalance = await RpcConnection.getRpcConnection().getBalance(new PublicKey(pubKey));
+    const accountBalance = await RpcConnection.getRpcConnection().getBalance(
+      new PublicKey(pubKey)
+    );
     bot.sendMessage(
       chatId,
-      `\`\`\`===============================\n|      Wallet Details          |\n===============================\nPublic Key: ${pubKey}\nBalance: ${(accountBalance / LAMPORTS_PER_SOL).toFixed(2)} SOL\nPrivate Key: ${keys?.private} \`\`\``,
+      `\`\`\`===============================\n|      Wallet Details          |\n===============================\nPublic Key: ${pubKey}\nBalance: ${(
+        accountBalance / LAMPORTS_PER_SOL
+      ).toFixed(2)} SOL\nPrivate Key: ${keys?.private} \`\`\``,
       {
         reply_markup: {
           inline_keyboard: [
-            [{ text: "View on SolScan", url: `https://solscan.io/account/${pubKey}` }, { text: "close", callback_data: "close" }],
-            [{text: "withdraw", callback_data: `withdraw_${pubKey}`}],
+            [
+              {
+                text: "View on SolScan",
+                url: `https://solscan.io/account/${pubKey}`,
+              },
+              { text: "close", callback_data: "close" },
+            ],
+            [{ text: "withdraw", callback_data: `withdraw_${pubKey}` }],
             [{ text: "Delete Wallet", callback_data: `delete_${pubKey}` }],
           ],
         },
@@ -169,34 +203,37 @@ const deleteWallet = async (publicKey: string): Promise<boolean> => {
 };
 
 const handleDelete = async (chatId: number, pubKey: string) => {
-  bot.sendMessage(chatId, `Are you sure?\nThis action cannot be undone and will delete wallet ${pubKey}`, {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: "Confirm", callback_data: `confirm_delete_${pubKey}` }],
-        [{ text: "cancel", callback_data: "close" }],
-      ],
-    },
-  });
+  bot.sendMessage(
+    chatId,
+    `Are you sure?\nThis action cannot be undone and will delete wallet ${pubKey}`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "Confirm", callback_data: `confirm_delete_${pubKey}` }],
+          [{ text: "cancel", callback_data: "close" }],
+        ],
+      },
+    }
+  );
 };
 
 async function handleWithdraw(chatId: number, publicKey: any) {
   const connection = RpcConnection.getRpcConnection();
-  const balance = (await connection.getBalance(new PublicKey(publicKey))) / LAMPORTS_PER_SOL;
+  const balance =
+    (await connection.getBalance(new PublicKey(publicKey))) / LAMPORTS_PER_SOL;
 
   if (balance <= 0.0000001) {
     bot.sendMessage(chatId, "Insufficient Funds!", {
       reply_markup: {
-        inline_keyboard: [
-          [{ text: "close", callback_data: "close" }]
-        ]
-      }
+        inline_keyboard: [[{ text: "close", callback_data: "close" }]],
+      },
     });
     return;
   }
 
   bot.sendMessage(chatId, "Please provide your wallet address:");
 
-  bot.once('message', async (msg) => {
+  bot.once("message", async (msg) => {
     const walletAddress = msg.text;
 
     if (!walletAddress) {
@@ -206,7 +243,7 @@ async function handleWithdraw(chatId: number, publicKey: any) {
     const recentBlockHash = await connection.getLatestBlockhash();
     const row = await db.wallet.findFirst({
       where: { public: publicKey },
-      select: { private: true }
+      select: { private: true },
     });
 
     if (!row) {
@@ -220,14 +257,14 @@ async function handleWithdraw(chatId: number, publicKey: any) {
       feePayer: dbKeyPair.publicKey,
     });
 
-    const fees = await transaction.getEstimatedFee(connection) || 5000;
-    const balanceToTransfer = (balance * LAMPORTS_PER_SOL) - fees;
+    const fees = (await transaction.getEstimatedFee(connection)) || 5000;
+    const balanceToTransfer = balance * LAMPORTS_PER_SOL - fees;
 
     transaction.add(
       SystemProgram.transfer({
         fromPubkey: dbKeyPair.publicKey,
         toPubkey: new PublicKey(walletAddress),
-        lamports: balanceToTransfer
+        lamports: balanceToTransfer,
       })
     );
 
@@ -246,6 +283,7 @@ async function handleWithdraw(chatId: number, publicKey: any) {
 }
 
 bot.on("message", handleGmMessage);
+bot.onText(/\/start/, handleStartCommand);
 bot.onText(/\/home/, handleHomeCommand);
 bot.onText(/\/settings/, async (msg: Message) => {});
 bot.onText(/\/wallets/, handleListWalletCommand);
