@@ -1,5 +1,5 @@
 import TelegramBot, { Message, CallbackQuery } from "node-telegram-bot-api";
-
+import bs58 from "bs58";
 import { Keypair } from "@solana/web3.js";
 import db from "./lib/db";
 
@@ -39,7 +39,7 @@ const createWallet = async (chatId: number) => {
     data: {
       chatId: chatId,
       public: keypair.publicKey.toString(),
-      private: keypair.secretKey.toString(),
+      private: bs58.encode(keypair.secretKey),
     },
   });
   bot.sendMessage(
