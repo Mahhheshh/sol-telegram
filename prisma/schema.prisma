@@ -15,7 +15,7 @@ datasource db {
 
 model Wallet {
   id      Int    @id @default(autoincrement())
-  chatId  Int
+  chatId  BigInt
   public  String
   private String 
 }
